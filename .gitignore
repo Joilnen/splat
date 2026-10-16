@@ -20,6 +20,9 @@
 *.out
 *.app
 
+# nvim buffer
+*.*~
+
 build
 cmake_out
 compile_commands.json
