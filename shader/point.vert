@@ -31,5 +31,4 @@ void main() {
     gl_Position = vec4(p.xyz / p.w, 1);
     gl_PointSize = 2;
     PassColor = vec4(gaussian.color.rgb, gaussian.color.a);
-
 }

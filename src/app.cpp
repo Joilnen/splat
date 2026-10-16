@@ -7,6 +7,7 @@
 #include <string>
 #include "external/miniply/miniply.h"
 #include "util.hpp"
+#include "happly.h"
 
 #define GLM_ENABLE_EXPERIMENTAL  // waow
 
@@ -20,16 +21,38 @@
 
 #include <chrono>
 #include <ctime>
+#include <string_view>
+#include <ranges>
+#include <print>
 
 splat::App *app_ptr;
 
 namespace splat {
 
-App::App(char* ply_path) {
+App::App(std::vector<std::string>& args) {
+
+    std::string path;
+
+    if (args.size() < 2)  return;
+    if (args.size() > 2) {
+        if (args[1] == "--gs" || args[1] == "-gs") {
+            fgrays = true;
+            path = args[2];
+        }
+        else if (args[2] == "--gs" || args[2] == "-gs") {
+            fgrays = true;
+            path = args[1];
+        }
+        else exit(-1);
+    }
+    else if(args.size() == 2)
+        path = args[1];
+
     init_window();
-    load_data(ply_path);
+    load_mask();
+    load_data(path.c_str());
     load_shaders();
-    sorting = Sorting();
+    // sorting = Sorting();
     sorting.start(num_gaussians, bounds, data);
     std::cout << "ok\n";
 }
@@ -43,7 +66,7 @@ void App::init_window() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    win = glfwCreateWindow(WIDTH, HEIGHT, "Hello", nullptr, nullptr);
+    win = glfwCreateWindow(WIDTH, HEIGHT, "Editor de 3dgs", nullptr, nullptr);
     assert(win != nullptr);
     glfwMakeContextCurrent(win);
 
@@ -52,21 +75,69 @@ void App::init_window() {
     };
     glfwSetFramebufferSizeCallback(win, resize_callback);
     auto scroll_callback = [](GLFWwindow* window, double xoffset, double yoffset) {
-    app_ptr->speed = (yoffset<0) ? app_ptr->speed * 0.9f : app_ptr->speed * 1.1f;
+        app_ptr->speed = (yoffset<0) ? app_ptr->speed * 0.9f : app_ptr->speed * 1.1f;
     };
     glfwSetScrollCallback(win, scroll_callback);
 
     glfwSwapInterval(0);  // disable vsync
 
-
     glewInit();
+}
+
+void App::load_data_(char* ply_path) {
+    // Relevant spherical harmonics https://en.wikipedia.org/wiki/Table_of_spherical_harmonics#ℓ_=_0
+    const float SH_0 = 0.28209479177387814f;
+    // Relevant properties of the ply file
+    const std::vector<std::string> properties = {
+        "x",
+        "y",
+        "z",
+        "f_dc_0",
+        "f_dc_1",
+        "f_dc_2",
+        "opacity",
+        "scale_0",
+        "scale_1",
+        "scale_2",
+        "rot_0",
+        "rot_1",
+        "rot_2",
+        "rot_3",
+    };
+
+    std::cout << "Reading ply...\n";
+    auto start_time = std::chrono::system_clock::now();
+
+    // Check if ply file exists
+    std::unique_ptr<happly::PLYData> plyIn = nullptr;
+    try {
+        plyIn = std::make_unique<happly::PLYData>(ply_path);
+        plyIn->validate();
+    }
+    catch(...) {
+        std::cerr << "Failed to open " << ply_path << std::endl;
+        exit(-1);
+    }
+
+    // Check we have a vertex element to pull data from
+    try {
+        happly::Element &gsSplatEl = plyIn->getElement("vertex");
+    }
+    catch(...) {
+        std::cerr << "Failed to get any element" << std::endl;
+        exit(-1);
+    }
+
+    // if (gsSplatEl == nullptr) {
+    //     std::cerr << "no vertex element could be found" << std::endl;
+    // }
 }
 
 /**
  * Load data from .ply file into an SSBO that is an array of `Gaussian` structs.
  * Disregards view-dependent spherical harmonic colors.
  */
-void App::load_data(char* ply_path) {
+void App::load_data(const char* ply_path) {
     // Relevant spherical harmonics https://en.wikipedia.org/wiki/Table_of_spherical_harmonics#ℓ_=_0
     const float SH_0 = 0.28209479177387814f;
     // Relevant properties of the ply file
@@ -108,7 +179,7 @@ void App::load_data(char* ply_path) {
 
     // Getting all the indices where the relevant splat data is stored in the file
     uint32_t gaussSplatIdx[properties.size()];
-    for (int i=0; i<properties.size(); ++i) {
+    for (int i = 0; i < properties.size(); ++i) {
         gaussSplatIdx[i] = gsSplatEl->find_property(properties[i].c_str());
     }
 
@@ -125,7 +196,6 @@ void App::load_data(char* ply_path) {
 
     // Creating gaussian splats based on the data we read in
     for (size_t i = 0; i < num_gaussians; ++i) {
-
         int offset = i * properties.size();
         Gaussian g{};
 
@@ -136,12 +206,27 @@ void App::load_data(char* ply_path) {
             1.0f,
         };
 
-        g.color = {
-            filedata[offset + 3],
-            filedata[offset + 4],
-            filedata[offset + 5],
-            0.0f,
-        };
+        if (fgrays) [[unlikely]] {
+            float color =  (
+                filedata[offset + 3] +
+                filedata[offset + 3] +
+                filedata[offset + 3]) / 3;
+
+            g.color = {
+                color,
+                color,
+                color,
+                0.0f,
+            };
+        }
+        else {
+            g.color = {
+                filedata[offset + 3],
+                filedata[offset + 4],
+                filedata[offset + 5],
+                0.0f,
+            };
+        }
 
         // Extract base color from spherical harmonics
         g.color = 0.5f + SH_0 * g.color;
@@ -188,8 +273,7 @@ void App::load_data(char* ply_path) {
     // Create and fill Gaussian SSBO
     glGenBuffers(1, &gauss_ssbo);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, gauss_ssbo);
-    glBufferData(
-            GL_SHADER_STORAGE_BUFFER, data.size() * sizeof(Gaussian), data.data(), GL_DYNAMIC_COPY);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, data.size() * sizeof(Gaussian), data.data(), GL_DYNAMIC_COPY);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, gauss_ssbo);
 
     // Create and fill index SSBO.  After sorting, this will contain indices into the Gaussian SSBO,
@@ -201,9 +285,10 @@ void App::load_data(char* ply_path) {
     glGenBuffers(1, &index_ssbo);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, index_ssbo);
     glBufferData(GL_SHADER_STORAGE_BUFFER,
-                 indices.size() * sizeof(int),
-                 indices.data(),
-                 GL_DYNAMIC_COPY);
+         indices.size() * sizeof(int),
+         indices.data(),
+         GL_DYNAMIC_COPY
+    );
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, index_ssbo);
 
     // Create vertex buffer with a single screen-space quad.
@@ -214,12 +299,13 @@ void App::load_data(char* ply_path) {
 
     glGenVertexArrays(1, &vao);
     glBindVertexArray(vao);
-    glVertexAttribPointer(0,                  // location
-                          2,                  // attribute size (2D position on screen)
-                          GL_FLOAT,           // attribute type
-                          GL_FALSE,           // don't normalize
-                          2 * sizeof(float),  // stride
-                          0                   // offset
+    glVertexAttribPointer(
+        0,         // location
+        2,         // attribute size (2D position on screen)
+        GL_FLOAT,  // attribute type
+        GL_FALSE,  // don't normalize
+        2 * sizeof(float),  // stride
+        0                   // offset
     );
     glEnableVertexAttribArray(0);
 }
@@ -265,9 +351,10 @@ void App::sort() {
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, index_ssbo);
     glBufferData(GL_SHADER_STORAGE_BUFFER,
-                 output.size() * sizeof(int),
-                 output.data(),
-                 GL_DYNAMIC_COPY);
+         output.size() * sizeof(int),
+         output.data(),
+         GL_DYNAMIC_COPY
+    );
 }
 
 void App::async_sort_update() {
@@ -278,19 +365,96 @@ void App::async_sort_update() {
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, index_ssbo);
     glBufferData(
-            GL_SHADER_STORAGE_BUFFER, sorted.size() * sizeof(int), sorted.data(), GL_DYNAMIC_COPY);
+        GL_SHADER_STORAGE_BUFFER, sorted.size() *
+        sizeof(int), sorted.data(),
+        GL_DYNAMIC_COPY
+    );
 }
 
 void App::load_shaders() {
-    auto vert = util::load_shader("../shader/gaussian.vert", GL_VERTEX_SHADER);
-    auto frag = util::load_shader("../shader/gaussian.frag", GL_FRAGMENT_SHADER);
+    auto vert = util::load_shader("../../shader/gaussian.vert", GL_VERTEX_SHADER);
+    auto frag = util::load_shader("../../shader/gaussian.frag", GL_FRAGMENT_SHADER);
     gaussian_shader = util::link_shaders({vert, frag});
 
-    auto vert_p = util::load_shader("../shader/point.vert", GL_VERTEX_SHADER);
-    auto frag_p = util::load_shader("../shader/point.frag", GL_FRAGMENT_SHADER);
+    auto vert_p = util::load_shader("../../shader/point.vert", GL_VERTEX_SHADER);
+    auto frag_p = util::load_shader("../../shader/point.frag", GL_FRAGMENT_SHADER);
     point_shader = util::link_shaders({vert_p, frag_p});
 
-    shader = point_shader;
+    auto hvert = util::load_shader("../../shader/halfgaussian.vert", GL_VERTEX_SHADER);
+    auto hfrag = util::load_shader("../../shader/halfgaussian.frag", GL_FRAGMENT_SHADER);
+    halfgaussian_shader = util::link_shaders({hvert, hfrag});
+
+    shader = gaussian_shader;
+}
+
+void App::load_mask() {
+    // Relevant spherical harmonics https://en.wikipedia.org/wiki/Table_of_spherical_harmonics#ℓ_=_0
+    const float SH_0 = 0.28209479177387814f;
+    // Relevant properties of the ply file
+    const std::vector<std::string> properties = {
+        "x",
+        "y",
+        "z",
+        "f_dc_0",
+        "f_dc_1",
+        "f_dc_2",
+        "opacity",
+        "scale_0",
+        "scale_1",
+        "scale_2",
+        "rot_0",
+        "rot_1",
+        "rot_2",
+        "rot_3",
+    };
+
+    std::cout << "Reading ply...\n";
+    auto start_time = std::chrono::system_clock::now();
+
+    // Check if ply file exists
+    miniply::PLYReader reader("../../data/strawberry_leaf.ply");
+    if (!reader.valid()) {
+        std::cerr << "Failed to open " << std::endl;
+    }
+
+    // Check we have a vertex element to pull data from
+    miniply::PLYElement* gsSplatEl = reader.get_element(reader.find_element("vertex"));
+    if (gsSplatEl == nullptr) {
+        std::cerr << "no vertex element could be found" << std::endl;
+    }
+
+    num_gaussians = reader.num_rows();
+    // data.reserve(num_gaussians);
+    std::cout << "Got " << num_gaussians << " gaussians (" << num_gaussians * sizeof(Gaussian) / 1e6 << "MB)\n";
+
+    // Getting all the indices where the relevant splat data is stored in the file
+    uint32_t gaussSplatIdx[properties.size()];
+    for (int i=0; i<properties.size(); ++i) {
+        gaussSplatIdx[i] = gsSplatEl->find_property(properties[i].c_str());
+    }
+
+    std::cout << "Extracting gaussians...\n";
+    reader.load_element();
+    float* filedata = new float[properties.size() * num_gaussians];
+    reader.extract_properties(gaussSplatIdx, properties.size(), miniply::PLYPropertyType::Float, filedata);
+
+    // Creating gaussian splats based on the data we read in
+    for (size_t i = 0; i < num_gaussians; ++i) {
+        int offset = i * properties.size();
+        mask_points.emplace_back(
+            glm::vec3{
+                filedata[offset + 0],
+                filedata[offset + 1],
+                filedata[offset + 2]
+            }
+        );
+    }
+    // Clean up the float array as the gaussians are now stored in the vec "data"
+    delete[] filedata;
+
+    auto end_time = std::chrono::system_clock::now();
+    std::chrono::duration<double> duration_in_s = end_time - start_time;
+    std::cout << "Loading object took " << duration_in_s.count() << "s" << std::endl;
 }
 
 void App::run() {
@@ -309,7 +473,7 @@ void App::run() {
         ++frame;
 
         time_delta = glfwGetTime() - time;
-        if (frame%interval == 0) {
+        if (fstats && frame % interval == 0) {
             frames_sum = std::reduce(frametimes.begin(),frametimes.end());
             std::cout << "drew " << interval << " frames, took " << 1000.0f * frames_sum / interval
                       << " ms avg / " << (1 / frames_sum) * interval << " fps" << std::endl;
@@ -319,7 +483,7 @@ void App::run() {
                       << "ms on average\n";
             sorting.reset_stats();
         }
-        frametimes[frame%interval] = time_delta;
+        frametimes[frame % interval] = time_delta;
     }
 }
 
@@ -328,6 +492,7 @@ void App::process_inputs() {
     if (glfwGetKey(win, GLFW_KEY_C) == GLFW_PRESS) {
         sort();
     }
+
     delta_speed = speed * time_delta;
     if (glfwGetKey(win, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) {
         delta_speed *= 5.0f;
@@ -340,23 +505,39 @@ void App::process_inputs() {
     if (glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS) {
         cam.translate(delta_speed * cam.forward());
     }
+
     if (glfwGetKey(win, GLFW_KEY_S) == GLFW_PRESS) {
         cam.translate(-delta_speed * cam.forward());
     }
+
     if (glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS) {
         cam.translate(-delta_speed * cam.right());
     }
+
     if (glfwGetKey(win, GLFW_KEY_D) == GLFW_PRESS) {
         cam.translate(delta_speed * cam.right());
     }
+
     if (glfwGetKey(win, GLFW_KEY_SPACE) == GLFW_PRESS) {
         cam.translate(delta_speed * cam.up());
     }
+
     if (glfwGetKey(win, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) {
         cam.translate(-delta_speed * cam.up());
     }
+
     if (glfwGetKey(win, GLFW_KEY_PERIOD) == GLFW_PRESS) {
         speed = 1.5f;
+    }
+
+    if (glfwGetKey(win, GLFW_KEY_F) == GLFW_PRESS) {
+        move_masked();
+        step_mask += -0.05; 
+    }
+
+    if (glfwGetKey(win, GLFW_KEY_R) == GLFW_PRESS) {
+        reset_masked();
+        step_mask = 0.0; 
     }
 
     if (glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
@@ -365,6 +546,7 @@ void App::process_inputs() {
         glfwGetCursorPos(win, &x, &y);
         cam.update_rot(x, y);
     }
+
     if (glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_RELEASE) {
         cam.reset_mouse();
         glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
@@ -373,8 +555,13 @@ void App::process_inputs() {
     if (glfwGetKey(win, GLFW_KEY_G) == GLFW_PRESS) {
         shader = gaussian_shader;
     }
+
     if (glfwGetKey(win, GLFW_KEY_P) == GLFW_PRESS) {
         shader = point_shader;
+    }
+
+    if (glfwGetKey(win, GLFW_KEY_H) == GLFW_PRESS) {
+        shader = halfgaussian_shader;
     }
 }
 
@@ -411,7 +598,7 @@ void App::draw() {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, gauss_ssbo);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, index_ssbo);
 
-    if (shader == gaussian_shader) {
+    if (shader == gaussian_shader || shader == halfgaussian_shader) {
         // Instanced draw call for N screen-space quads.
         glDrawArraysInstanced(GL_TRIANGLE_FAN, 0, 4, num_gaussians);
     } else {
@@ -420,16 +607,50 @@ void App::draw() {
     }
 }
 
+void App::reset_masked() {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, gauss_ssbo);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, data.size() * sizeof(float), data.data());
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
+void App::move_masked() {
+    std::cout << "ENtrou\n";
+    std::cout << data.size() << "\n";
+    std::cout << mask_points.size() << "\n";
+    int count_g = 0;
+    int count_m = 0;
+    std::vector bdata = data;
+    for (auto& g: bdata) {
+        // std::cout << "Pos 0 " << g.pos[0] << "\n";
+        // std::cout << "Pos 1 " << g.pos[1] << "\n"; 
+        // std::cout << "Pos 2 " << g.pos[2] << "\n\n";
+        // for (auto& m: mask_points) {
+        //     if (g.pos[0] == m[0] &&
+        //         g.pos[1] == m[1] &&
+        //         g.pos[2] == m[2]) {
+                    g.pos[0] += step_mask;
+                    g.pos[1] += step_mask;
+        //     }
+        //     count_m += 1;
+        // }
+        // count_g += 1;
+        // if (count_g + count_m > 100000) break;
+    }
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, gauss_ssbo);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, bdata.size() * sizeof(float), bdata.data());
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    std::cout << "SAiu\n";
+}
+
 }  // namespace splat
 
+int main(int argc, char** argv)
+{
+    auto args = std::views::counted(argv, argc)
+              | std::views::transform([](const char* arg) { return std::string(arg); })
+              | std::ranges::to<std::vector<std::string>>();
 
-int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::cout << "usage: " << argv[0] << " <point_cloud.ply>\n";
-        return 1;
-    }
-    char* ply_path = argv[1];
-    auto app = splat::App(ply_path);
+    auto app = splat::App(args);
     app_ptr = &app;
     app.speed = 1.5f;
     app.run();

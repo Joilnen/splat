@@ -14,6 +14,8 @@ struct Gaussian {
     glm::vec4 color;
     // 3D Covariance, as mat4 for alignment
     glm::mat4 sigma;
+    // Se mascarada
+    // bool masked;
 };
 
 }  // namespace splat

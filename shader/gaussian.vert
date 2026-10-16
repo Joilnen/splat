@@ -11,7 +11,7 @@ out mat3 PassSigma;
 out vec2 PassPosition;
 
 struct Gaussian {
-    vec4 pos;    // X, Y, Z, W=1
+    vec4 pos;    // X, Y, Z, W = 1
     vec4 color;  // R, G, B, A
     mat4 sigma;  // 3D Covariance, as mat4 for alignment
 };
@@ -68,7 +68,8 @@ vec4 get_basis(mat2 sigma) {
     return vec4(b1, b2);
 }
 
-void main() {
+void main()
+{
     Gaussian gaussian = gaussians[indices[gl_InstanceID]];
 
     // Position in view space

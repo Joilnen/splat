@@ -9,6 +9,7 @@
 #include <GLFW/glfw3.h>
 #include <vector>
 #include <utility>
+#include <optional>
 
 int main(int argc, char** argv);
 
@@ -16,14 +17,13 @@ namespace splat {
 
 class App {
    public:
-    App(char* ply_path);
+    App(std::vector<std::string>& ply_path);
     ~App();
     void run();
 
     const uint32_t WIDTH = 1280;
     const uint32_t HEIGHT = 720;
     float speed;
-
 
    private:
     GLFWwindow* win;
@@ -32,7 +32,9 @@ class App {
     void init_window();
     void draw();
     void process_inputs();
-    void load_data(char* ply_path);
+    void load_data(const char* ply_path);
+    void load_data_(char* ply_path);
+    void load_mask();
     void load_shaders();
 
     std::vector<Gaussian> data = {};
@@ -49,11 +51,19 @@ class App {
     GLuint index_ssbo;
     GLuint point_shader;
     GLuint gaussian_shader;
+    GLuint halfgaussian_shader;
     GLuint shader;
     size_t num_gaussians;
 
     Camera cam;
     Sorting sorting;
+
+    std::vector<glm::vec3> mask_points;
+    float step_mask {0.0};
+    void move_masked();
+    void reset_masked();
+    bool fstats {true};
+    bool fgrays {false};
 };
 }  // namespace splat
 
